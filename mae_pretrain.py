@@ -4,6 +4,7 @@ import math
 import torch
 from tqdm import tqdm
 import wandb
+wandb.require("core")
 
 from model import MAE_ViT
 from utils import setup_seed, visualize
@@ -50,31 +51,40 @@ def train(args):
                 optim.zero_grad()
             train_loss += loss.item()
         lr_scheduler.step()
+        to_log["train_loss"] = train_loss / len(train_loader)
         
         model.eval()
-        val_loss = 0
-        with torch.no_grad():
-            for img, _label in val_loader:
-                img = img.to(device)
-                predicted_img, mask = model(img)
-                loss = loss_fn(img, predicted_img, mask)
-                val_loss += loss.item()
+        if epoch % args.eval_interval == 0:
+            val_loss = 0
+            with torch.no_grad():
+                for img, _label in val_loader:
+                    img = img.to(device)
+                    predicted_img, mask = model(img)
+                    loss = loss_fn(img, predicted_img, mask)
+                    val_loss += loss.item()
+            to_log["val_loss"] = val_loss / len(val_loader)
 
-        to_log["train_loss"] = train_loss / len(train_loader)
-        to_log["val_loss"] = val_loss / len(val_loader)
+            imgs_to_visualize = torch.stack([val_dataset[i][0] for i in range(8)]).to(device)
+            to_log["visualisation"] = visualize(model, imgs_to_visualize)
+
+
         to_log["learning_rate"] = lr_scheduler.get_last_lr()[0]
-        to_log["epoch"] = epoch
-        to_log["visualisation"] = visualize(
-            torch.stack([val_dataset[i][0] for i in range(8)]).to(device)
-        )
-        wandb.log(to_log, step=step_count)
+        to_log["step"] = step_count
 
-        msg = f"Epoch {epoch} - train loss: {to_log['train_loss']:.4f}, val loss: {to_log['val_loss']:.4f}"
+        wandb.log(to_log, step=epoch)
+
+        if epoch % args.snapshot_interval == 0:
+            model_filename = f"{args.model_path}_{epoch}.pt"
+            torch.save(model.state_dict(), model_filename)
+            artifact = wandb.Artifact('model-weights', type='model')
+            artifact.add_file(model_filename)
+            wandb.log_artifact(artifact, aliases=["latest", f"epoch_{epoch}"])
+
+        msg = f"Epoch {epoch} - train loss: {to_log['train_loss']:.4f}"
         progress_bar.set_description(msg)
         progress_bar.update(1)
         print()
-
-    torch.save(model, args.model_path)
+        
     wandb.finish()
 
 
@@ -88,8 +98,10 @@ if __name__ == '__main__':
     parser.add_argument('--mask_ratio', type=float, default=0.75)
     parser.add_argument('--total_epoch', type=int, default=2000)
     parser.add_argument('--warmup_epoch', type=int, default=200)
-    parser.add_argument('--model_path', type=str, default='vit-t-mae.pt')
+    parser.add_argument('--model_path', type=str, default='vit-t-mae')
     parser.add_argument('--dataset', type=str, default='cifar10')
+    parser.add_argument('--snapshot_interval', type=int, default=100)
+    parser.add_argument('--eval_interval', type=int, default=10)
     args = parser.parse_args()
 
     assert args.batch_size % args.max_device_batch_size == 0
