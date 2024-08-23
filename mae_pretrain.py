@@ -8,7 +8,7 @@ import wandb
 wandb.require("core")
 
 from model import MAE_ViT
-from utils import setup_seed, visualize, var_thresholded_metrics, compute_l2_per_component
+from utils import setup_seed, visualize, var_thresholded_l2, compute_l2_per_component, sum_dicts
 from datasets import load_dataset
 from pca import remove_low_freq
 
@@ -33,7 +33,7 @@ def train(args):
         
     loss_fn = lambda img_1, img_2, mask: ((img_1 - img_2).square() * mask).mean() / args.mask_ratio
 
-    l2_per_component_list, l2_per_component_cum_list, l2_per_component_cum_rev_list = [], [], []
+    l2_per_component_list = []
 
     wandb.init(project="mae-test", config=args)
     step_count = 0
@@ -73,28 +73,20 @@ def train(args):
                     predicted_img, mask = model(img)
                     loss = loss_fn(img_high_freq, predicted_img, mask)
                     val_loss += loss.item()
-
-                    l2pc, l2pc_cum, l2pc_cum_rev = compute_l2_per_component(
-                        img_high_freq, predicted_img, mask, pca, args.mask_ratio
+                    l2_per_component += compute_l2_per_component(
+                        img_high_freq, predicted_img, mask, pca, args.mask_ratio, block_size=16)
+                    metrics = sum_dicts(
+                        metrics,
+                        var_thresholded_l2(img, predicted_img, mask, pca, args.mask_ratio, [0.5, 0.6, 0.7, 0.8, 0.9])
                     )
-                    l2_per_component += l2pc
-                    l2_per_component_cum += l2pc_cum
-                    l2_per_component_cum_rev += l2pc_cum_rev
                     
             to_log["val_loss"] = val_loss / len(val_loader)
-
-            l2_per_component =  l2_per_component / len(val_loader)
-            l2_per_component_cum = l2_per_component_cum / len(val_loader)
-            l2_per_component_list.append(l2_per_component)
-            l2_per_component_cum_list.append(l2_per_component_cum)
-            l2_per_component_cum_rev_list.append(l2_per_component_cum_rev)
-            metrics = var_thresholded_metrics(l2_per_component_cum,l2_per_component_cum_rev, pca, [0.5, 0.6, 0.7, 0.8, 0.9])
-            to_log.update(metrics)
+            l2_per_component_list.append(l2_per_component / len(val_loader))
+            to_log.update({k:v/len(val_loader) for k,v in metrics.items()})
 
             imgs_to_visualize = torch.stack([val_dataset[i][0] for i in range(8)]).to(device)
             vis = visualize(model, imgs_to_visualize, pca, args.var_threshold, denormalize_stats=(0.5, 0.5))
-            
-            wandb.log({"visualisation": wandb.Image(to_pil_image(vis))})
+            to_log["visualisation"] = wandb.Image(to_pil_image(vis))
         
 
         to_log["learning_rate"] = lr_scheduler.get_last_lr()[0]
@@ -110,12 +102,8 @@ def train(args):
             wandb.log_artifact(artifact)#, aliases=["latest", f"epoch_{epoch}"])
 
             torch.save(l2_per_component_list, 'l2_per_component_list.pt')
-            torch.save(l2_per_component_cum_list, 'l2_per_component_cum_list.pt')
-            torch.save(l2_per_component_cum_rev_list, 'l2_per_component_cum_rev_list.pt')
             artifact = wandb.Artifact('l2_per_component', type='metrics')
             artifact.add_file("l2_per_component_list.pt")
-            artifact.add_file("l2_per_component_cum_list.pt")
-            artifact.add_file("l2_per_component_cum_rev_list.pt")
             wandb.log_artifact(artifact)#, aliases=["latest", f"epoch_{epoch}"])
 
         progress_bar.update(1)
