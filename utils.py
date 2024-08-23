@@ -2,9 +2,7 @@ import random
 import torch
 import numpy as np
 from einops import rearrange
-import wandb
 import torch
-import torch.nn.functional as F
 
 from pca import remove_low_freq
 
@@ -15,19 +13,9 @@ def setup_seed(seed=42):
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
 
-# @torch.no_grad()
-# def visualize(model, val_img):
-#     predicted_val_img, mask = model(val_img)
-#     predicted_val_img = predicted_val_img * mask + val_img * (1 - mask)
-#     img = torch.cat([val_img * (1 - mask), predicted_val_img, val_img], dim=0)
-#     img = rearrange(img, '(v h1 w1) c h w -> c (h1 h) (w1 v w)', w1=2, v=3)
-#     img = img.permute(1, 2, 0).cpu().numpy()
-#     img = np.clip(img * 255, 0, 255).astype(np.uint8)
-#     wandb_image = wandb.Image(img)
-#     return wandb_image
 
 @torch.no_grad()
-def visualize(model, img, pca, var_threshold, denormalize_stats=None):
+def visualize(model, img, pca, var_threshold, denormalize_stats=None) -> torch.Tensor:
     """Visualizes the original, masked, predicted, and high-frequency images in a grid."""
     pred_img, mask = model(img)
     masked_img = img * (1-mask)
@@ -40,76 +28,34 @@ def visualize(model, img, pca, var_threshold, denormalize_stats=None):
         img = img * std + mean
     img = img.clip(0, 1)
     return img
-    # img = img.permute(1, 2, 0).cpu().numpy()
-    # img = np.clip(img * 255, 0, 255).astype(np.uint8)
-    # wandb_image = wandb.Image(img)
-    # return wandb_image
 
-def var_thresholded_metrics(l2_per_component_cum, pca, thresholds):
+
+@torch.no_grad()
+def var_thresholded_metrics(l2pc_cum, l2pc_cum_rev, pca, thresholds) -> dict:
+    """
+    Computes L2 norm metrics based on PCA explained variance thresholds.
+
+    Args:
+        l2pc_cum (torch.Tensor): Cumulative L2 norms of PCA components, 
+            starting from the top variance components (highest explained variance).
+        l2pc_cum_rev (torch.Tensor): Cumulative L2 norms of PCA components, 
+            starting from the bottom variance components (lowest explained variance).
+        pca (PCA): Fitted PCA object with `explained_variance_ratio_`.
+        thresholds (list of float): List of variance thresholds (0-1). Counting from the top variance.
+
+    Returns:
+        dict: Metrics as L2 norms for top and bottom components at each threshold.
+    """
     cumulative_var = torch.cumsum(pca.explained_variance_ratio_, dim=0)
-    total_l2 = l2_per_component_cum[-1]
 
     metrics = {}
     for th in thresholds:
         idx = (cumulative_var <= th).sum().item() + 1
-        metrics[f"val_l2/bottom_{1-th:.2f}"] = total_l2-l2_per_component_cum[idx].item()
+        metrics[f"val_l2/top_{th:.2f}"] = l2pc_cum[idx].item()
+        metrics[f"val_l2/bottom_{1-th:.2f}"] = l2pc_cum_rev[idx].item()
 
     return metrics
         
-
-def calc_var_thresholded_metrics(img, predicted_img, mask, mask_ratio, pca):
-    img = img.view(img.size(0), -1)
-    predicted_img = predicted_img.view(predicted_img.size(0), -1)
-    mask = mask.view(mask.size(0), -1)
-
-    l1 = lambda img_1, img_2: torch.mean((img_1 - img_2).abs() * mask) / mask_ratio
-    l2 = lambda img_1, img_2: torch.mean((img_1 - img_2).square() * mask) / mask_ratio
-    
-    cumulative_var = torch.cumsum(pca.explained_variance_ratio_, dim=0)
-    top_50_idx = (cumulative_var <= 0.5).sum().item() + 1
-    top_75_idx = (cumulative_var <= 0.75).sum().item() + 1
-    top_90_idx = (cumulative_var <= 0.9).sum().item() + 1
-
-    results = {}
-    results['l2_total'] = l2(img, predicted_img)
-    results['l1_total'] = l1(img, predicted_img)
-
-    img_transformed = pca.transform(img)
-    predicted_img_transformed = pca.transform(predicted_img)
-    
-    img_top_50 = pca.inverse_transform(img_transformed, n=top_50_idx)
-    predicted_img_top_50 = pca.inverse_transform(predicted_img_transformed, n=top_50_idx)
-    results['l2_top_50'] = l2(img_top_50, predicted_img_top_50)
-    results['l1_top_50'] = l1(img_top_50, predicted_img_top_50)
-    
-    img_top_75 = pca.inverse_transform(img_transformed, n=top_75_idx)
-    predicted_img_top_75 = pca.inverse_transform(predicted_img_transformed, n=top_75_idx)
-    results['l2_top_75'] = l2(img_top_75, predicted_img_top_75)
-    results['l1_top_75'] = l1(img_top_75, predicted_img_top_75)
-
-    img_top_90 = pca.inverse_transform(img_transformed, n=top_90_idx)
-    predicted_img_top_90 = pca.inverse_transform(predicted_img_transformed, n=top_90_idx)
-    results['l2_top_90'] = l2(img_top_75, predicted_img_top_90)
-    results['l1_top_90'] = l1(img_top_75, predicted_img_top_90)
-    
-    img_bot_50 = pca.inverse_transform(img_transformed, n=top_50_idx, top=False)
-    predicted_img_bot_50 = pca.inverse_transform(predicted_img_transformed, n=top_50_idx, top=False)
-    results['l2_bottom_50'] = l2(img_bot_50, predicted_img_bot_50)
-    results['l1_bottom_50'] = l1(img_bot_50, predicted_img_bot_50)
-    
-    img_bot_25 = pca.inverse_transform(img_transformed, n=top_75_idx, top=False)
-    predicted_img_bot_25 = pca.inverse_transform(predicted_img_transformed, n=top_75_idx, top=False)
-    results['l2_bottom_25'] = l2(img_bot_25, predicted_img_bot_25)
-    results['l1_bottom_25'] = l1(img_bot_25, predicted_img_bot_25)
-
-    img_bot_10 = pca.inverse_transform(img_transformed, n=top_90_idx, top=False)
-    predicted_img_bot_10 = pca.inverse_transform(predicted_img_transformed, n=top_90_idx, top=False)
-    results['l2_bottom_10'] = l2(img_bot_10, predicted_img_bot_10)
-    results['l1_bottom_10'] = l2(img_bot_10, predicted_img_bot_10)
-
-    results = {k:v.item() for k,v in results.items()}
-    
-    return results
 
 @torch.no_grad()
 def compute_l2_per_component(img, pred_img, mask, pca, mask_ratio, block_size=64):
@@ -136,6 +82,7 @@ def compute_l2_per_component(img, pred_img, mask, pca, mask_ratio, block_size=64
     
     result = torch.zeros(pca.n_components, dtype=torch.float32, device=img.device)
     result_cum = torch.zeros(pca.n_components, dtype=torch.float32, device=img.device)
+    result_cum_reverse = torch.zeros(pca.n_components, dtype=torch.float32, device=img.device)
     num_samples = img_t.size(0)
     
     for start_idx in range(0, num_samples, block_size):
@@ -144,13 +91,17 @@ def compute_l2_per_component(img, pred_img, mask, pca, mask_ratio, block_size=64
         pred_img_t_block = pred_img_t[start_idx:end_idx]
         diff_block = img_t_block - pred_img_t_block
         weighted_diff_block = diff_block.unsqueeze(2) * pca.components_.unsqueeze(0) * mask[start_idx:end_idx].unsqueeze(1)
-        result += torch.mean(weighted_diff_block.square(), dim=(0, 2)) / mask_ratio
-        weighted_diff_block = torch.cumsum(weighted_diff_block, dim=1)
-        result_cum += torch.mean(weighted_diff_block.square(), dim=(0, 2)) / mask_ratio
+        
+        result += weighted_diff_block.square().mean(dim=(0, 2)) / mask_ratio
+        weighted_diff_block_cum = torch.cumsum(weighted_diff_block, dim=1)
+        weighted_diff_block_cum_reverse = weighted_diff_block + weighted_diff_block_cum[:, -1:] - weighted_diff_block_cum
+        result_cum += weighted_diff_block_cum.square().mean(dim=(0, 2)) / mask_ratio
+        result_cum_reverse += weighted_diff_block_cum_reverse.square().mean(dim=(0, 2)) / mask_ratio
 
-    result /= (num_samples / block_size)
-    result_cum /= (num_samples / block_size)
-    return result, result_cum
+    result *= block_size / (num_samples * mask_ratio)
+    result_cum *= block_size / (num_samples * mask_ratio)
+    result_cum_reverse *= block_size / (num_samples * mask_ratio)
+    return result, result_cum, result_cum_reverse
     
 
 def sum_dicts(*dicts):
