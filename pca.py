@@ -169,6 +169,8 @@ def remove_high_freq(img: torch.Tensor, pca: PCA, var_threshold: float = 0.5) ->
     Returns:
         torch.Tensor: Image with high frequency components removed, in the original shape.
     """
+    if var_threshold == 0:
+        return img
     b, c, h, w = img.size()
     img = img.view(b, c*h*w)
     img_transformed = pca.transform(img)
@@ -190,6 +192,8 @@ def remove_low_freq(img, pca, var_threshold=0.5):
     Returns:
         torch.Tensor: Image with low frequency components removed, in the original shape.
     """
+    if var_threshold == 0:
+        return img
     b, c, h, w = img.size()
     img = img.view(b, c*h*w)
     img_transformed = pca.transform(img)
@@ -218,7 +222,7 @@ if __name__ == "__main__":
         img = img.view(img.size(0), -1).to(device)
         pca.partial_fit(img)
     
-    torch.save(pca.cpu().state_dict(), "pca_cifar.pt")
+    torch.save(pca.cpu().state_dict(), "pca_cifar10.pt")
     
 
     batch_size = 2048
