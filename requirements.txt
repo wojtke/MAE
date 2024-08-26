@@ -3,5 +3,6 @@ torchvision
 tqdm
 einops
 timm
-lovley_tensors
+lovely_tensors
 wandb
+gpustat
